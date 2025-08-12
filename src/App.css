@@ -349,6 +349,16 @@
   flex-shrink: 0;
 }
 
+.location-icon.no-location {
+  color: #9ca3af;
+}
+
+.no-location-text {
+  font-size: 0.875rem;
+  color: #9ca3af;
+  font-style: italic;
+}
+
 .timestamp {
   font-size: 0.75rem;
   color: #6b7280;

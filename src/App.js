@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Upload, X, FileImage, AlertCircle, MapPin, Check, Trash2 } from 'lucide-react';
 import './App.css';
+import EXIF from 'exif-js';
 
 const TeachableMachineImageClassifier = () => {
   const [model, setModel] = useState(null);
@@ -20,25 +21,53 @@ const TeachableMachineImageClassifier = () => {
   // Extract GPS coordinates from EXIF data
   const extractGPSFromExif = async (file) => {
     return new Promise((resolve) => {
-      // Simple mock implementation - in real app, use EXIF.js library
-      // For testing, return random coordinates for demonstration
-      const mockCoordinates = {
-        latitude: 12.9716 + (Math.random() - 0.5) * 0.001, // Bangalore area with small variance
-        longitude: 77.5946 + (Math.random() - 0.5) * 0.001
-      };
-      resolve(mockCoordinates);
+      // TODO: Replace with actual EXIF reading using exif-js library
+      // For now, simulate real-world scenario where some images have GPS, some don't
+
+      // Randomly simulate images with/without GPS data (70% have GPS, 30% don't)
+      const hasGPS = Math.random() > 0.3;
+
+      if (hasGPS) {
+        // Mock coordinates for images that "have" GPS data
+        const mockCoordinates = {
+          latitude: 12.9716 + (Math.random() - 0.5) * 0.001, // Bangalore area with small variance
+          longitude: 77.5946 + (Math.random() - 0.5) * 0.001
+        };
+        resolve(mockCoordinates);
+      } else {
+        // No GPS data available
+        resolve(null);
+      }
+
+      /* 
+      // Real implementation would look like this:
+      EXIF.getData(file, function() {
+        const lat = EXIF.getTag(this, "GPSLatitude");
+        const lon = EXIF.getTag(this, "GPSLongitude");
+        const latRef = EXIF.getTag(this, "GPSLatitudeRef");
+        const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
+        
+        if (lat && lon) {
+          const latitude = convertDMSToDD(lat, latRef);
+          const longitude = convertDMSToDD(lon, lonRef);
+          resolve({ latitude, longitude });
+        } else {
+          resolve(null); // No GPS data
+        }
+      });
+      */
     });
   };
 
   // Load the Teachable Machine model
   const loadModel = useCallback(async () => {
     if (model) return model;
-    
+
     setIsModelLoading(true);
     try {
       const modelURL = MODEL_URL + "model.json";
       const metadataURL = MODEL_URL + "metadata.json";
-      
+
       const loadedModel = await window.tmImage.load(modelURL, metadataURL);
       setModel(loadedModel);
       return loadedModel;
@@ -65,21 +94,27 @@ const TeachableMachineImageClassifier = () => {
     }
   };
 
-  // Send mango tree locations to backend
+  // Send images with location data to backend
   const sendMangoLocationsToBackend = async (allImages) => {
-    if (allImages.length === 0) return;
+    // Filter only images that have location data
+    const imagesWithLocation = allImages.filter(img => img.location !== null);
+
+    if (imagesWithLocation.length === 0) {
+      console.log('No images with location data to send to backend');
+      return;
+    }
 
     try {
       setIsCheckingDuplicates(true);
-      
-      const locationData = allImages.map(img => ({
+
+      const locationData = imagesWithLocation.map(img => ({
         imageName: img.file.name,
         latitude: img.location.latitude,
         longitude: img.location.longitude,
-        imageId: String(img.id) // Ensure imageId is a string
+        imageId: String(img.id)
       }));
 
-      console.log('Sending location data:', locationData); // Debug log
+      console.log(`Sending ${locationData.length} images with location data (out of ${allImages.length} total):`, locationData);
 
       const response = await fetch(`${BACKEND_URL}/check-proximity`, {
         method: 'POST',
@@ -89,12 +124,11 @@ const TeachableMachineImageClassifier = () => {
         body: JSON.stringify({ locations: locationData })
       });
 
-      console.log('Response status:', response.status); // Debug log
+      console.log('Response status:', response.status);
 
       if (response.ok) {
         const duplicateData = await response.json();
-        console.log('Received duplicate data:', duplicateData); // Debug log
-        console.log('Current imageResults IDs:', imageResults.map(img => ({id: img.id, name: img.file.name}))); // Debug log
+        console.log('Received duplicate data:', duplicateData);
         setDuplicatePairs(duplicateData.similar_pairs || []);
       } else {
         const errorText = await response.text();
@@ -127,14 +161,14 @@ const TeachableMachineImageClassifier = () => {
         if (file.type.startsWith('image/')) {
           const img = new Image();
           const imageUrl = URL.createObjectURL(file);
-          
+
           // Extract GPS coordinates
           const location = await extractGPSFromExif(file);
-          
+
           await new Promise((resolve) => {
             img.onload = async () => {
               const predictions = await classifyImage(img, loadedModel);
-              
+
               if (predictions) {
                 const result = {
                   id: Date.now() + Math.random(),
@@ -155,8 +189,8 @@ const TeachableMachineImageClassifier = () => {
       }
 
       setImageResults(prev => [...prev, ...newResults]);
-      
-      // Send all images with location data to backend
+
+      // Send images with location data to backend
       if (newResults.length > 0) {
         await sendMangoLocationsToBackend(newResults);
       }
@@ -191,7 +225,7 @@ const TeachableMachineImageClassifier = () => {
       if (response.ok) {
         // Remove the pair from duplicates list
         setDuplicatePairs(prev => prev.filter(pair => pair.pairId !== pairId));
-        
+
         // Remove images from results if needed
         if (action === 'keep_first_remove_second') {
           removeImageResult(imageId2);
@@ -208,8 +242,8 @@ const TeachableMachineImageClassifier = () => {
   // Remove an image result
   const removeImageResult = (id) => {
     console.log('Attempting to remove image with ID:', id, typeof id);
-    console.log('Current imageResults IDs:', imageResults.map(r => ({id: r.id, type: typeof r.id})));
-    
+    console.log('Current imageResults IDs:', imageResults.map(r => ({ id: r.id, type: typeof r.id })));
+
     setImageResults(prev => {
       const updated = prev.filter(result => String(result.id) !== String(id)); // Fixed: !== instead of ===
       const toRemove = prev.find(result => String(result.id) === String(id));
@@ -221,9 +255,9 @@ const TeachableMachineImageClassifier = () => {
       }
       return updated;
     });
-    
+
     // Also remove from duplicate pairs if it exists
-    setDuplicatePairs(prev => prev.filter(pair => 
+    setDuplicatePairs(prev => prev.filter(pair =>
       String(pair.imageId1) !== String(id) && String(pair.imageId2) !== String(id)
     ));
   };
@@ -256,7 +290,7 @@ const TeachableMachineImageClassifier = () => {
             className="file-input"
             disabled={isModelLoading || isProcessing}
           />
-          
+
           <div className="upload-content">
             <Upload size={48} className="upload-icon" />
             <button
@@ -280,16 +314,16 @@ const TeachableMachineImageClassifier = () => {
             Nearby Mango Trees Found ({duplicatePairs.length} pairs)
             {isCheckingDuplicates && <span className="checking-text"> - Checking...</span>}
           </h2>
-          
+
           {duplicatePairs.map((pair) => {
             const image1 = imageResults.find(img => String(img.id) === String(pair.imageId1));
             const image2 = imageResults.find(img => String(img.id) === String(pair.imageId2));
-            
+
             if (!image1 || !image2) {
-              console.log('Could not find images for pair:', pair, 'Available images:', imageResults.map(img => ({id: img.id, name: img.file.name})));
+              console.log('Could not find images for pair:', pair, 'Available images:', imageResults.map(img => ({ id: img.id, name: img.file.name })));
               return null;
             }
-            
+
             return (
               <div key={pair.pairId} className="duplicate-pair">
                 <div className="pair-info">
@@ -297,7 +331,7 @@ const TeachableMachineImageClassifier = () => {
                     Distance: {pair.distance ? pair.distance.toFixed(2) : 'Unknown'}m apart
                   </p>
                 </div>
-                
+
                 <div className="pair-images">
                   <div className="pair-image">
                     <img src={image1.imageUrl} alt={image1.file.name} />
@@ -307,7 +341,7 @@ const TeachableMachineImageClassifier = () => {
                       {image1.location ? `${image1.location.latitude.toFixed(6)}, ${image1.location.longitude.toFixed(6)}` : 'No location'}
                     </p>
                   </div>
-                  
+
                   <div className="pair-image">
                     <img src={image2.imageUrl} alt={image2.file.name} />
                     <p className="image-name">{image2.file.name}</p>
@@ -317,23 +351,23 @@ const TeachableMachineImageClassifier = () => {
                     </p>
                   </div>
                 </div>
-                
+
                 <div className="pair-actions">
-                  <button 
+                  <button
                     className="action-btn save-both"
                     onClick={() => handleDuplicateAction(pair.pairId, 'save_both', pair.imageId1, pair.imageId2)}
                   >
                     <Check size={16} />
                     Save Both
                   </button>
-                  <button 
+                  <button
                     className="action-btn keep-first"
                     onClick={() => handleDuplicateAction(pair.pairId, 'keep_first_remove_second', pair.imageId1, pair.imageId2)}
                   >
                     <Trash2 size={16} />
                     Keep First, Remove Second
                   </button>
-                  <button 
+                  <button
                     className="action-btn keep-second"
                     onClick={() => handleDuplicateAction(pair.pairId, 'remove_first_keep_second', pair.imageId1, pair.imageId2)}
                   >
@@ -352,6 +386,14 @@ const TeachableMachineImageClassifier = () => {
         <div className="results-header">
           <h2 className="results-title">
             Classification Results ({imageResults.length})
+            <span className="mango-count">
+              {imageResults.filter(result => {
+                const mangoTreePrediction = result.predictions.find(p =>
+                  p.className.toLowerCase() === 'mango_tree'
+                );
+                return mangoTreePrediction && mangoTreePrediction.probability > 0.5;
+              }).length} mango trees detected
+            </span>
           </h2>
           <button onClick={clearAllResults} className="clear-button">
             Clear All
@@ -365,87 +407,92 @@ const TeachableMachineImageClassifier = () => {
         {[...imageResults]
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
           .map((result) => (
-          <div key={result.id} className="result-card">
-            <div className="image-container">
-              <img
-                src={result.imageUrl}
-                alt={result.file.name}
-                className="result-image"
-              />
-              <button
-                onClick={() => removeImageResult(result.id)}
-                className="delete-button"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="card-content">
-              <div className="file-info">
-                <FileImage size={16} className="file-icon" />
-                <span className="file-name" title={result.file.name}>
-                  {result.file.name}
-                </span>
+            <div key={result.id} className="result-card">
+              <div className="image-container">
+                <img
+                  src={result.imageUrl}
+                  alt={result.file.name}
+                  className="result-image"
+                />
+                <button
+                  onClick={() => removeImageResult(result.id)}
+                  className="delete-button"
+                >
+                  <X size={16} />
+                </button>
               </div>
-              
-              {result.location && (
-                <div className="location-info">
-                  <MapPin size={14} className="location-icon" />
-                  <span className="coordinates">
-                    {result.location.latitude.toFixed(6)}, {result.location.longitude.toFixed(6)}
+
+              <div className="card-content">
+                <div className="file-info">
+                  <FileImage size={16} className="file-icon" />
+                  <span className="file-name" title={result.file.name}>
+                    {result.file.name}
                   </span>
                 </div>
-              )}
-              
-              <div className="timestamp">
-                Processed at {result.timestamp}
-              </div>
 
-              <div className="predictions">
-                <h4 className="predictions-title">Predictions:</h4>
-                {/* Sort predictions: mango_tree first, then not_mango_tree, then others by probability */}
-                {result.predictions
-                  .sort((a, b) => {
-                    // Priority order: mango_tree, not_mango_tree, then others by probability
-                    const getPriority = (pred) => {
-                      if (pred.className.toLowerCase() === 'mango_tree') return 1;
-                      if (pred.className.toLowerCase() === 'not_mango_tree') return 2;
-                      return 3;
-                    };
-                    
-                    const priorityA = getPriority(a);
-                    const priorityB = getPriority(b);
-                    
-                    if (priorityA !== priorityB) {
-                      return priorityA - priorityB;
-                    }
-                    
-                    // If same priority, sort by probability (highest first)
-                    return b.probability - a.probability;
-                  })
-                  .slice(0, 3)
-                  .map((prediction, index) => (
-                  <div key={index} className="prediction-item">
-                    <span className="prediction-name">
-                      {prediction.className}
+                {result.location ? (
+                  <div className="location-info">
+                    <MapPin size={14} className="location-icon" />
+                    <span className="coordinates">
+                      {result.location.latitude.toFixed(6)}, {result.location.longitude.toFixed(6)}
                     </span>
-                    <div className="prediction-score">
-                      <div className="progress-bar">
-                        <div
-                          className="progress-fill"
-                          style={{ width: `${prediction.probability * 100}%` }}
-                        ></div>
-                      </div>
-                      <span className="probability">
-                        {(prediction.probability * 100).toFixed(1)}%
-                      </span>
-                    </div>
                   </div>
-                ))}
+                ) : (
+                  <div className="location-info">
+                    <MapPin size={14} className="location-icon no-location" />
+                    <span className="no-location-text">No GPS data available</span>
+                  </div>
+                )}
+
+                <div className="timestamp">
+                  Processed at {result.timestamp}
+                </div>
+
+                <div className="predictions">
+                  <h4 className="predictions-title">Predictions:</h4>
+                  {/* Sort predictions: mango_tree first, then not_mango_tree, then others by probability */}
+                  {result.predictions
+                    .sort((a, b) => {
+                      // Priority order: mango_tree, not_mango_tree, then others by probability
+                      const getPriority = (pred) => {
+                        if (pred.className.toLowerCase() === 'mango_tree') return 1;
+                        if (pred.className.toLowerCase() === 'not_mango_tree') return 2;
+                        return 3;
+                      };
+
+                      const priorityA = getPriority(a);
+                      const priorityB = getPriority(b);
+
+                      if (priorityA !== priorityB) {
+                        return priorityA - priorityB;
+                      }
+
+                      // If same priority, sort by probability (highest first)
+                      return b.probability - a.probability;
+                    })
+                    .slice(0, 3)
+                    .map((prediction, index) => (
+                      <div key={index} className="prediction-item">
+                        <span className="prediction-name">
+                          {prediction.className}
+                        </span>
+                        <div className="prediction-score">
+                          <div className="progress-bar">
+                            <div
+                              className="progress-fill"
+                              style={{ width: `${prediction.probability * 100}%` }}
+                            ></div>
+                          </div>
+                          <span className="probability">
+                            {(prediction.probability * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))}
       </div>
 
       {/* Empty State */}
