@@ -16,7 +16,7 @@ const TeachableMachineImageClassifier = () => {
   const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
   // Your Teachable Machine model URL - replace with your actual model URL
-  const MODEL_URL = "https://teachablemachine.withgoogle.com/models/6UdJBojDI/";
+  const MODEL_URL = process.env.TEACHABLE_MACHINE_URL || 'https://teachablemachine.withgoogle.com/models/6UdJBojDI/';
 
   // Extract GPS coordinates from EXIF data
   // Helper function to convert DMS (Degrees, Minutes, Seconds) to Decimal Degrees
@@ -509,7 +509,7 @@ const TeachableMachineImageClassifier = () => {
           <li>• Upload images with GPS location data for classification</li>
           <li>• Images will be automatically sent to the backend for proximity checking</li>
           <li>• If images are found within 1 meter of each other, you'll see duplicate resolution options</li>
-          <li>• Update MODEL_URL and REACT_APP_BACKEND_URL in your environment</li>
+          <li>• Update TEACHABLE_MACHINE_URL and REACT_APP_BACKEND_URL in your environment</li>
           <li>• Each image can be removed individually using the X button</li>
         </ul>
       </div>
