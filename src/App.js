@@ -19,43 +19,31 @@ const TeachableMachineImageClassifier = () => {
   const MODEL_URL = "https://teachablemachine.withgoogle.com/models/6UdJBojDI/";
 
   // Extract GPS coordinates from EXIF data
+  // Helper function to convert DMS (Degrees, Minutes, Seconds) to Decimal Degrees
+  const convertDMSToDD = (dms, ref) => {
+    let dd = dms[0] + dms[1] / 60 + dms[2] / 3600;
+    if (ref === "S" || ref === "W") {
+      dd = dd * -1;
+    }
+    return dd;
+  };
+
   const extractGPSFromExif = async (file) => {
     return new Promise((resolve) => {
-      // TODO: Replace with actual EXIF reading using exif-js library
-      // For now, simulate real-world scenario where some images have GPS, some don't
-
-      // Randomly simulate images with/without GPS data (70% have GPS, 30% don't)
-      const hasGPS = Math.random() > 0.3;
-
-      if (hasGPS) {
-        // Mock coordinates for images that "have" GPS data
-        const mockCoordinates = {
-          latitude: 12.9716 + (Math.random() - 0.5) * 0.001, // Bangalore area with small variance
-          longitude: 77.5946 + (Math.random() - 0.5) * 0.001
-        };
-        resolve(mockCoordinates);
-      } else {
-        // No GPS data available
-        resolve(null);
-      }
-
-      /* 
-      // Real implementation would look like this:
-      EXIF.getData(file, function() {
+      EXIF.getData(file, function () {
         const lat = EXIF.getTag(this, "GPSLatitude");
         const lon = EXIF.getTag(this, "GPSLongitude");
         const latRef = EXIF.getTag(this, "GPSLatitudeRef");
         const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
-        
-        if (lat && lon) {
+
+        if (lat && lon && latRef && lonRef) {
           const latitude = convertDMSToDD(lat, latRef);
           const longitude = convertDMSToDD(lon, lonRef);
           resolve({ latitude, longitude });
         } else {
-          resolve(null); // No GPS data
+          resolve(null); // No GPS data available
         }
       });
-      */
     });
   };
 
