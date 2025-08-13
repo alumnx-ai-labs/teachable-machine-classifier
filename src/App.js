@@ -6,6 +6,7 @@ import EXIF from 'exif-js';
 const TeachableMachineImageClassifier = () => {
   const [model, setModel] = useState(null);
   const [isModelLoading, setIsModelLoading] = useState(false);
+  const [modelType, setModelType] = useState('teachable_machine'); // 'teachable_machine' or 'mobilenet'
   const [imageResults, setImageResults] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [duplicatePairs, setDuplicatePairs] = useState([]);
@@ -68,14 +69,47 @@ const TeachableMachineImageClassifier = () => {
     }
   }, [model]);
 
+  // Convert image to base64
+  const imageToBase64 = (imageElement) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = imageElement.width;
+    canvas.height = imageElement.height;
+    ctx.drawImage(imageElement, 0, 0);
+    return canvas.toDataURL('image/jpeg');
+  };
+
   // Process a single image through the model
   const classifyImage = async (imageElement, loadedModel) => {
     try {
-      const predictions = await loadedModel.predict(imageElement);
-      return predictions.map(pred => ({
-        className: pred.className,
-        probability: pred.probability
-      }));
+      if (modelType === 'teachable_machine') {
+        const predictions = await loadedModel.predict(imageElement);
+        return predictions.map(pred => ({
+          className: pred.className,
+          probability: pred.probability
+        }));
+      } else if (modelType === 'mobilenet') {
+        // Send to backend for MobileNetV2 classification
+        const base64Image = imageToBase64(imageElement);
+
+        const response = await fetch(`${BACKEND_URL}/classify-image`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            image_data: base64Image,
+            model_type: 'mobilenet'
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          return result.predictions;
+        } else {
+          throw new Error('Backend classification failed');
+        }
+      }
     } catch (error) {
       console.error('Error classifying image:', error);
       return null;
@@ -137,11 +171,15 @@ const TeachableMachineImageClassifier = () => {
     setIsProcessing(true);
 
     try {
-      const loadedModel = await loadModel();
-      if (!loadedModel) {
-        setIsProcessing(false);
-        return;
+      let loadedModel = null;
+      if (modelType === 'teachable_machine') {
+        loadedModel = await loadModel();
+        if (!loadedModel) {
+          setIsProcessing(false);
+          return;
+        }
       }
+      // For mobilenet, we don't need to load a model on frontend
 
       const newResults = [];
 
@@ -292,6 +330,33 @@ const TeachableMachineImageClassifier = () => {
               Select multiple image files with GPS location data (JPG, PNG, etc.)
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Model Selection */}
+      <div className="model-selection">
+        <h3>Select Model:</h3>
+        <div className="model-options">
+          <label className="model-option">
+            <input
+              type="radio"
+              value="teachable_machine"
+              checked={modelType === 'teachable_machine'}
+              onChange={(e) => setModelType(e.target.value)}
+              disabled={isProcessing}
+            />
+            Teachable Machine
+          </label>
+          <label className="model-option">
+            <input
+              type="radio"
+              value="mobilenet"
+              checked={modelType === 'mobilenet'}
+              onChange={(e) => setModelType(e.target.value)}
+              disabled={isProcessing}
+            />
+            Fine-tuned MobileNetV2
+          </label>
         </div>
       </div>
 
