@@ -7,6 +7,7 @@ import './App.css';
 const TeachableMachineImageClassifier = () => {
   const [model, setModel] = useState(null);
   const [isModelLoading, setIsModelLoading] = useState(false);
+  const [modelType, setModelType] = useState('teachable_machine'); // 'teachable_machine' or 'mobilenet'
   const [imageResults, setImageResults] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [duplicatePairs, setDuplicatePairs] = useState([]);
@@ -81,10 +82,15 @@ const TeachableMachineImageClassifier = () => {
 
   // Load the Teachable Machine model
   const loadModel = useCallback(async () => {
-    if (model) return model;
+    if (model && modelType === 'teachable_machine') return model;
     if (!librariesLoaded) {
       setError('Libraries not loaded yet');
       return null;
+    }
+
+    if (modelType === 'mobilenet') {
+      // For MobileNet, we don't need to load a frontend model
+      return 'mobilenet';
     }
 
     setIsModelLoading(true);
@@ -119,16 +125,49 @@ const TeachableMachineImageClassifier = () => {
     } finally {
       setIsModelLoading(false);
     }
-  }, [model, librariesLoaded]);
+  }, [model, librariesLoaded, modelType]);
+
+  // Convert image to base64
+  const imageToBase64 = (imageElement) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = imageElement.width;
+    canvas.height = imageElement.height;
+    ctx.drawImage(imageElement, 0, 0);
+    return canvas.toDataURL('image/jpeg');
+  };
 
   // Process a single image through the model
   const classifyImage = async (imageElement, loadedModel) => {
     try {
-      const predictions = await loadedModel.predict(imageElement);
-      return predictions.map(pred => ({
-        className: pred.className,
-        probability: pred.probability
-      }));
+      if (modelType === 'teachable_machine') {
+        const predictions = await loadedModel.predict(imageElement);
+        return predictions.map(pred => ({
+          className: pred.className,
+          probability: pred.probability
+        }));
+      } else if (modelType === 'mobilenet') {
+        // Send to backend for MobileNetV2 classification
+        const base64Image = imageToBase64(imageElement);
+
+        const response = await fetch(`${BACKEND_URL}/classify-image`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            image_data: base64Image,
+            model_type: 'mobilenet'
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          return result.predictions;
+        } else {
+          throw new Error('Backend classification failed');
+        }
+      }
     } catch (error) {
       console.error('Error classifying image:', error);
       return null;
@@ -183,6 +222,13 @@ const TeachableMachineImageClassifier = () => {
     }
   };
 
+  // Handle model type change
+  const handleModelTypeChange = (newModelType) => {
+    setModelType(newModelType);
+    setModel(null); // Reset model when switching types
+    setError(''); // Clear any previous errors
+  };
+
   // Handle file upload and processing
   const handleFileUpload = async (event) => {
     const files = Array.from(event.target.files);
@@ -192,10 +238,16 @@ const TeachableMachineImageClassifier = () => {
     setError('');
 
     try {
-      const loadedModel = await loadModel();
-      if (!loadedModel) {
-        setIsProcessing(false);
-        return;
+      let loadedModel = null;
+      if (modelType === 'teachable_machine') {
+        loadedModel = await loadModel();
+        if (!loadedModel) {
+          setIsProcessing(false);
+          return;
+        }
+      } else {
+        // For mobilenet, we use backend classification
+        loadedModel = 'mobilenet';
       }
 
       const newResults = [];
@@ -320,10 +372,10 @@ const TeachableMachineImageClassifier = () => {
       {/* Header */}
       <div className="header">
         <h1 className="app-title">
-          Teachable Machine Mango Tree Classifier
+          Mango Tree Classifier with Model Selection
         </h1>
         <p className="app-description">
-          Upload images to classify mango trees and detect nearby duplicates using GPS location data.
+          Upload images to classify mango trees using either Teachable Machine or fine-tuned MobileNetV2 models, and detect nearby duplicates using GPS location data.
         </p>
       </div>
 
@@ -371,9 +423,47 @@ const TeachableMachineImageClassifier = () => {
         </div>
         {librariesLoaded && (
           <div style={{ fontSize: '12px', color: '#10b981', marginTop: '4px' }}>
-            Ready to process images with real EXIF GPS extraction and Teachable Machine classification
+            Ready to process images with real EXIF GPS extraction and AI classification
           </div>
         )}
+      </div>
+
+      {/* Model Selection */}
+      <div style={{ 
+        marginBottom: '24px', 
+        padding: '16px', 
+        backgroundColor: 'white', 
+        borderRadius: '8px', 
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)' 
+      }}>
+        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: '600' }}>Select Classification Model:</h3>
+        <div style={{ display: 'flex', gap: '16px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="radio"
+              value="teachable_machine"
+              checked={modelType === 'teachable_machine'}
+              onChange={(e) => handleModelTypeChange(e.target.value)}
+              disabled={isProcessing || !librariesLoaded}
+              style={{ marginRight: '8px' }}
+            />
+            <span style={{ fontSize: '14px' }}>Teachable Machine</span>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="radio"
+              value="mobilenet"
+              checked={modelType === 'mobilenet'}
+              onChange={(e) => handleModelTypeChange(e.target.value)}
+              disabled={isProcessing || !librariesLoaded}
+              style={{ marginRight: '8px' }}
+            />
+            <span style={{ fontSize: '14px' }}>Fine-tuned MobileNetV2</span>
+          </label>
+        </div>
+        <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '8px' }}>
+          Current model: <strong>{modelType === 'teachable_machine' ? 'Teachable Machine (with fallback)' : 'MobileNetV2 (via backend)'}</strong>
+        </div>
       </div>
 
       {/* Upload Section */}
@@ -618,8 +708,9 @@ const TeachableMachineImageClassifier = () => {
       <div className="instructions">
         <h4 className="instructions-title">Instructions:</h4>
         <ul className="instructions-list">
-          <li>• Now using real EXIF GPS extraction from uploaded images</li>
-          <li>• Real Teachable Machine model loading (falls back to demo if URL invalid)</li>
+          <li>• Choose between Teachable Machine (with fallback) or MobileNetV2 models</li>
+          <li>• Teachable Machine runs locally with fallback to mock model if URL invalid</li>
+          <li>• MobileNetV2 uses backend API for classification</li>
           <li>• Upload images with GPS location data for classification</li>
           <li>• Images with GPS data are sent to backend for proximity checking</li>
           <li>• Duplicate resolution options appear for images within 1 meter</li>
