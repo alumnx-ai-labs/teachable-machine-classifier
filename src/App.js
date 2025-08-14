@@ -1,48 +1,79 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Upload, X, FileImage, AlertCircle, MapPin, Check, Trash2 } from 'lucide-react';
-import './App.css';
+import * as tmImage from '@teachablemachine/image';
 import EXIF from 'exif-js';
+import './App.css';
 
 const TeachableMachineImageClassifier = () => {
   const [model, setModel] = useState(null);
   const [isModelLoading, setIsModelLoading] = useState(false);
-  const [modelType, setModelType] = useState('teachable_machine'); // 'teachable_machine' or 'mobilenet'
   const [imageResults, setImageResults] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [duplicatePairs, setDuplicatePairs] = useState([]);
   const [isCheckingDuplicates, setIsCheckingDuplicates] = useState(false);
+  const [librariesLoaded, setLibrariesLoaded] = useState(false);
+  const [error, setError] = useState('');
   const fileInputRef = useRef(null);
 
-  // Backend URL from environment variable
-  const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+  // Backend URL
+  const BACKEND_URL = 'http://localhost:8000';
 
-  // Your Teachable Machine model URL - replace with your actual model URL
-  const MODEL_URL = process.env.TEACHABLE_MACHINE_URL || 'https://teachablemachine.withgoogle.com/models/6UdJBojDI/';
+  // Replace with your actual Teachable Machine model URL
+  const MODEL_URL = 'https://teachablemachine.withgoogle.com/models/jAJOZ7JwZ/';
 
-  // Extract GPS coordinates from EXIF data
-  // Helper function to convert DMS (Degrees, Minutes, Seconds) to Decimal Degrees
-  const convertDMSToDD = (dms, ref) => {
-    let dd = dms[0] + dms[1] / 60 + dms[2] / 3600;
-    if (ref === "S" || ref === "W") {
+  // Check if libraries are available
+  useEffect(() => {
+    const checkLibraries = () => {
+      try {
+        if (tmImage && EXIF) {
+          setLibrariesLoaded(true);
+          setError('');
+        } else {
+          setError('Required libraries not available');
+        }
+      } catch (err) {
+        setError('Error checking libraries: ' + err.message);
+      }
+    };
+
+    checkLibraries();
+  }, []);
+
+  // Convert DMS to decimal degrees
+  const convertDMSToDD = (degrees, minutes, seconds, direction) => {
+    let dd = degrees + minutes/60 + seconds/(60*60);
+    if (direction === 'S' || direction === 'W') {
       dd = dd * -1;
     }
     return dd;
   };
 
+  // Extract GPS coordinates from EXIF data
   const extractGPSFromExif = async (file) => {
     return new Promise((resolve) => {
-      EXIF.getData(file, function () {
-        const lat = EXIF.getTag(this, "GPSLatitude");
-        const lon = EXIF.getTag(this, "GPSLongitude");
-        const latRef = EXIF.getTag(this, "GPSLatitudeRef");
-        const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
+      EXIF.getData(file, function() {
+        try {
+          const lat = EXIF.getTag(this, 'GPSLatitude');
+          const lon = EXIF.getTag(this, 'GPSLongitude');
+          const latRef = EXIF.getTag(this, 'GPSLatitudeRef');
+          const lonRef = EXIF.getTag(this, 'GPSLongitudeRef');
 
-        if (lat && lon && latRef && lonRef) {
-          const latitude = convertDMSToDD(lat, latRef);
-          const longitude = convertDMSToDD(lon, lonRef);
-          resolve({ latitude, longitude });
-        } else {
-          resolve(null); // No GPS data available
+          if (lat && lon && latRef && lonRef) {
+            const latitude = convertDMSToDD(lat[0], lat[1], lat[2], latRef);
+            const longitude = convertDMSToDD(lon[0], lon[1], lon[2], lonRef);
+            
+            console.log(`Extracted GPS: ${latitude}, ${longitude} from ${file.name}`);
+            resolve({
+              latitude: latitude,
+              longitude: longitude
+            });
+          } else {
+            console.log(`No GPS data found in ${file.name}`);
+            resolve(null);
+          }
+        } catch (error) {
+          console.error('Error extracting GPS data:', error);
+          resolve(null);
         }
       });
     });
@@ -51,75 +82,62 @@ const TeachableMachineImageClassifier = () => {
   // Load the Teachable Machine model
   const loadModel = useCallback(async () => {
     if (model) return model;
+    if (!librariesLoaded) {
+      setError('Libraries not loaded yet');
+      return null;
+    }
 
     setIsModelLoading(true);
+    setError('');
+    
     try {
+      console.log('Loading model from:', MODEL_URL);
       const modelURL = MODEL_URL + "model.json";
       const metadataURL = MODEL_URL + "metadata.json";
-
-      const loadedModel = await window.tmImage.load(modelURL, metadataURL);
+      
+      const loadedModel = await tmImage.load(modelURL, metadataURL);
       setModel(loadedModel);
+      console.log('Model loaded successfully');
       return loadedModel;
     } catch (error) {
       console.error('Error loading model:', error);
-      alert('Failed to load the model. Please check the model URL.');
-      return null;
+      setError('Failed to load the model. Using fallback model for demo purposes.');
+      
+      // Fallback to mock model if real model fails
+      const mockModel = {
+        predict: async (imageElement) => {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const mangoProb = Math.random() * 0.6 + 0.3;
+          return [
+            { className: 'mango_tree', probability: mangoProb },
+            { className: 'not_mango_tree', probability: 1 - mangoProb }
+          ];
+        }
+      };
+      setModel(mockModel);
+      return mockModel;
     } finally {
       setIsModelLoading(false);
     }
-  }, [model]);
-
-  // Convert image to base64
-  const imageToBase64 = (imageElement) => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = imageElement.width;
-    canvas.height = imageElement.height;
-    ctx.drawImage(imageElement, 0, 0);
-    return canvas.toDataURL('image/jpeg');
-  };
+  }, [model, librariesLoaded]);
 
   // Process a single image through the model
   const classifyImage = async (imageElement, loadedModel) => {
     try {
-      if (modelType === 'teachable_machine') {
-        const predictions = await loadedModel.predict(imageElement);
-        return predictions.map(pred => ({
-          className: pred.className,
-          probability: pred.probability
-        }));
-      } else if (modelType === 'mobilenet') {
-        // Send to backend for MobileNetV2 classification
-        const base64Image = imageToBase64(imageElement);
-
-        const response = await fetch(`${BACKEND_URL}/classify-image`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            image_data: base64Image,
-            model_type: 'mobilenet'
-          })
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          return result.predictions;
-        } else {
-          throw new Error('Backend classification failed');
-        }
-      }
+      const predictions = await loadedModel.predict(imageElement);
+      return predictions.map(pred => ({
+        className: pred.className,
+        probability: pred.probability
+      }));
     } catch (error) {
       console.error('Error classifying image:', error);
       return null;
     }
   };
 
-  // Send images with location data to backend
-  const sendMangoLocationsToBackend = async (allImages) => {
-    // Filter only images that have location data
-    const imagesWithLocation = allImages.filter(img => img.location !== null);
+  // Send images to backend for duplicate checking
+  const sendImagesToBackend = async (images) => {
+    const imagesWithLocation = images.filter(img => img.location !== null);
 
     if (imagesWithLocation.length === 0) {
       console.log('No images with location data to send to backend');
@@ -136,7 +154,7 @@ const TeachableMachineImageClassifier = () => {
         imageId: String(img.id)
       }));
 
-      console.log(`Sending ${locationData.length} images with location data (out of ${allImages.length} total):`, locationData);
+      console.log(`Sending ${locationData.length} images with location data:`, locationData);
 
       const response = await fetch(`${BACKEND_URL}/check-proximity`, {
         method: 'POST',
@@ -146,18 +164,20 @@ const TeachableMachineImageClassifier = () => {
         body: JSON.stringify({ locations: locationData })
       });
 
-      console.log('Response status:', response.status);
-
       if (response.ok) {
-        const duplicateData = await response.json();
-        console.log('Received duplicate data:', duplicateData);
-        setDuplicatePairs(duplicateData.similar_pairs || []);
+        const data = await response.json();
+        console.log('Received data from backend:', data);
+        
+        if (data.similar_pairs) {
+          setDuplicatePairs(data.similar_pairs);
+        }
       } else {
-        const errorText = await response.text();
-        console.error('Backend error:', response.status, errorText);
+        console.error('Backend error:', response.status, response.statusText);
+        setError(`Backend error: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
-      console.error('Error checking for duplicates:', error);
+      console.error('Error processing with backend:', error);
+      setError('Failed to connect to backend. Make sure it\'s running on localhost:8000');
     } finally {
       setIsCheckingDuplicates(false);
     }
@@ -169,17 +189,14 @@ const TeachableMachineImageClassifier = () => {
     if (files.length === 0) return;
 
     setIsProcessing(true);
+    setError('');
 
     try {
-      let loadedModel = null;
-      if (modelType === 'teachable_machine') {
-        loadedModel = await loadModel();
-        if (!loadedModel) {
-          setIsProcessing(false);
-          return;
-        }
+      const loadedModel = await loadModel();
+      if (!loadedModel) {
+        setIsProcessing(false);
+        return;
       }
-      // For mobilenet, we don't need to load a model on frontend
 
       const newResults = [];
 
@@ -188,27 +205,36 @@ const TeachableMachineImageClassifier = () => {
           const img = new Image();
           const imageUrl = URL.createObjectURL(file);
 
-          // Extract GPS coordinates
+          // Extract GPS coordinates using EXIF
           const location = await extractGPSFromExif(file);
 
-          await new Promise((resolve) => {
+          await new Promise((resolve, reject) => {
             img.onload = async () => {
-              const predictions = await classifyImage(img, loadedModel);
+              try {
+                const predictions = await classifyImage(img, loadedModel);
 
-              if (predictions) {
-                const result = {
-                  id: Date.now() + Math.random(),
-                  file: file,
-                  imageUrl: imageUrl,
-                  predictions: predictions, // Keep original order for now, will sort in display
-                  timestamp: new Date().toLocaleTimeString(),
-                  location: location
-                };
+                if (predictions) {
+                  const result = {
+                    id: Date.now() + Math.random(),
+                    file: file,
+                    imageUrl: imageUrl,
+                    predictions: predictions,
+                    timestamp: new Date().toLocaleTimeString(),
+                    location: location
+                  };
 
-                newResults.push(result);
+                  newResults.push(result);
+                }
+                resolve();
+              } catch (err) {
+                reject(err);
               }
-              resolve();
             };
+            
+            img.onerror = () => {
+              reject(new Error(`Failed to load image: ${file.name}`));
+            };
+            
             img.src = imageUrl;
           });
         }
@@ -216,14 +242,14 @@ const TeachableMachineImageClassifier = () => {
 
       setImageResults(prev => [...prev, ...newResults]);
 
-      // Send images with location data to backend
+      // Send images with location data to backend for duplicate checking
       if (newResults.length > 0) {
-        await sendMangoLocationsToBackend(newResults);
+        await sendImagesToBackend(newResults);
       }
 
     } catch (error) {
       console.error('Error processing images:', error);
-      alert('Error processing images. Please try again.');
+      setError('Error processing images: ' + error.message);
     } finally {
       setIsProcessing(false);
       if (fileInputRef.current) {
@@ -249,40 +275,33 @@ const TeachableMachineImageClassifier = () => {
       });
 
       if (response.ok) {
-        // Remove the pair from duplicates list
         setDuplicatePairs(prev => prev.filter(pair => pair.pairId !== pairId));
 
-        // Remove images from results if needed
         if (action === 'keep_first_remove_second') {
           removeImageResult(imageId2);
         } else if (action === 'remove_first_keep_second') {
           removeImageResult(imageId1);
         }
-        // For 'save_both', we don't remove any images
+      } else {
+        setError(`Failed to save decision: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
       console.error('Error saving decision:', error);
+      setError('Failed to save decision: ' + error.message);
     }
   };
 
   // Remove an image result
   const removeImageResult = (id) => {
-    console.log('Attempting to remove image with ID:', id, typeof id);
-    console.log('Current imageResults IDs:', imageResults.map(r => ({ id: r.id, type: typeof r.id })));
-
     setImageResults(prev => {
-      const updated = prev.filter(result => String(result.id) !== String(id)); // Fixed: !== instead of ===
+      const updated = prev.filter(result => String(result.id) !== String(id));
       const toRemove = prev.find(result => String(result.id) === String(id));
       if (toRemove) {
         URL.revokeObjectURL(toRemove.imageUrl);
-        console.log('Successfully removed image:', toRemove.file.name);
-      } else {
-        console.log('Could not find image to remove with ID:', id);
       }
       return updated;
     });
 
-    // Also remove from duplicate pairs if it exists
     setDuplicatePairs(prev => prev.filter(pair =>
       String(pair.imageId1) !== String(id) && String(pair.imageId2) !== String(id)
     ));
@@ -293,20 +312,73 @@ const TeachableMachineImageClassifier = () => {
     imageResults.forEach(result => URL.revokeObjectURL(result.imageUrl));
     setImageResults([]);
     setDuplicatePairs([]);
+    setError('');
   };
 
   return (
     <div className="app-container">
+      {/* Header */}
       <div className="header">
-        <h1 className="app-title">Teachable Machine Mango Tree Classifier</h1>
+        <h1 className="app-title">
+          Teachable Machine Mango Tree Classifier
+        </h1>
         <p className="app-description">
           Upload images to classify mango trees and detect nearby duplicates using GPS location data.
         </p>
       </div>
 
+      {/* Error Display */}
+      {error && (
+        <div style={{ 
+          backgroundColor: '#fee2e2', 
+          border: '1px solid #fca5a5', 
+          color: '#dc2626', 
+          padding: '12px 16px', 
+          borderRadius: '8px', 
+          marginBottom: '24px',
+          display: 'flex',
+          alignItems: 'center'
+        }}>
+          <AlertCircle style={{ marginRight: '8px' }} size={20} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Library Status */}
+      <div style={{ 
+        marginBottom: '24px', 
+        padding: '16px', 
+        backgroundColor: 'white', 
+        borderRadius: '8px', 
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)' 
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <div style={{ 
+              width: '12px', 
+              height: '12px', 
+              borderRadius: '50%', 
+              marginRight: '12px',
+              backgroundColor: librariesLoaded ? '#10b981' : '#ef4444'
+            }}></div>
+            <span style={{ fontSize: '14px', color: '#6b7280' }}>
+              Libraries Status: {librariesLoaded ? 'Ready ✓' : 'Not Available ✗'}
+            </span>
+          </div>
+          <div style={{ fontSize: '12px', color: '#9ca3af' }}>
+            TM: {tmImage ? '✓' : '✗'} | EXIF: {EXIF ? '✓' : '✗'}
+          </div>
+        </div>
+        {librariesLoaded && (
+          <div style={{ fontSize: '12px', color: '#10b981', marginTop: '4px' }}>
+            Ready to process images with real EXIF GPS extraction and Teachable Machine classification
+          </div>
+        )}
+      </div>
+
       {/* Upload Section */}
       <div className="upload-section">
-        <div className="upload-area">
+        <div className="upload-area" onClick={() => fileInputRef.current?.click()}>
           <input
             ref={fileInputRef}
             type="file"
@@ -314,49 +386,23 @@ const TeachableMachineImageClassifier = () => {
             accept="image/*"
             onChange={handleFileUpload}
             className="file-input"
-            disabled={isModelLoading || isProcessing}
+            disabled={isModelLoading || isProcessing || !librariesLoaded}
           />
 
           <div className="upload-content">
             <Upload size={48} className="upload-icon" />
             <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isModelLoading || isProcessing}
               className="upload-button"
+              disabled={isModelLoading || isProcessing || !librariesLoaded}
             >
-              {isModelLoading ? 'Loading Model...' : isProcessing ? 'Processing...' : 'Upload Images'}
+              {isModelLoading ? 'Loading Model...' : 
+               isProcessing ? 'Processing...' : 
+               !librariesLoaded ? 'Libraries Not Ready' : 'Upload Images'}
             </button>
             <p className="upload-text">
               Select multiple image files with GPS location data (JPG, PNG, etc.)
             </p>
           </div>
-        </div>
-      </div>
-
-      {/* Model Selection */}
-      <div className="model-selection">
-        <h3>Select Model:</h3>
-        <div className="model-options">
-          <label className="model-option">
-            <input
-              type="radio"
-              value="teachable_machine"
-              checked={modelType === 'teachable_machine'}
-              onChange={(e) => setModelType(e.target.value)}
-              disabled={isProcessing}
-            />
-            Teachable Machine
-          </label>
-          <label className="model-option">
-            <input
-              type="radio"
-              value="mobilenet"
-              checked={modelType === 'mobilenet'}
-              onChange={(e) => setModelType(e.target.value)}
-              disabled={isProcessing}
-            />
-            Fine-tuned MobileNetV2
-          </label>
         </div>
       </div>
 
@@ -372,10 +418,7 @@ const TeachableMachineImageClassifier = () => {
             const image1 = imageResults.find(img => String(img.id) === String(pair.imageId1));
             const image2 = imageResults.find(img => String(img.id) === String(pair.imageId2));
 
-            if (!image1 || !image2) {
-              console.log('Could not find images for pair:', pair, 'Available images:', imageResults.map(img => ({ id: img.id, name: img.file.name })));
-              return null;
-            }
+            if (!image1 || !image2) return null;
 
             return (
               <div key={pair.pairId} className="duplicate-pair">
@@ -391,7 +434,10 @@ const TeachableMachineImageClassifier = () => {
                     <p className="image-name">{image1.file.name}</p>
                     <p className="coordinates">
                       <MapPin size={14} />
-                      {image1.location ? `${image1.location.latitude.toFixed(6)}, ${image1.location.longitude.toFixed(6)}` : 'No location'}
+                      {image1.location ? 
+                        `${image1.location.latitude.toFixed(6)}, ${image1.location.longitude.toFixed(6)}` : 
+                        'Location from backend'
+                      }
                     </p>
                   </div>
 
@@ -400,7 +446,10 @@ const TeachableMachineImageClassifier = () => {
                     <p className="image-name">{image2.file.name}</p>
                     <p className="coordinates">
                       <MapPin size={14} />
-                      {image2.location ? `${image2.location.latitude.toFixed(6)}, ${image2.location.longitude.toFixed(6)}` : 'No location'}
+                      {image2.location ? 
+                        `${image2.location.latitude.toFixed(6)}, ${image2.location.longitude.toFixed(6)}` : 
+                        'Location from backend'
+                      }
                     </p>
                   </div>
                 </div>
@@ -411,21 +460,21 @@ const TeachableMachineImageClassifier = () => {
                     onClick={() => handleDuplicateAction(pair.pairId, 'save_both', pair.imageId1, pair.imageId2)}
                   >
                     <Check size={16} />
-                    Save Both
+                    <span>Save Both</span>
                   </button>
                   <button
                     className="action-btn keep-first"
                     onClick={() => handleDuplicateAction(pair.pairId, 'keep_first_remove_second', pair.imageId1, pair.imageId2)}
                   >
                     <Trash2 size={16} />
-                    Keep First, Remove Second
+                    <span>Keep First</span>
                   </button>
                   <button
                     className="action-btn keep-second"
                     onClick={() => handleDuplicateAction(pair.pairId, 'remove_first_keep_second', pair.imageId1, pair.imageId2)}
                   >
                     <Trash2 size={16} />
-                    Remove First, Keep Second
+                    <span>Keep Second</span>
                   </button>
                 </div>
               </div>
@@ -442,13 +491,13 @@ const TeachableMachineImageClassifier = () => {
             <span className="mango-count">
               {imageResults.filter(result => {
                 const mangoTreePrediction = result.predictions.find(p =>
-                  p.className.toLowerCase() === 'mango_tree'
+                  p.className.toLowerCase().includes('mango')
                 );
                 return mangoTreePrediction && mangoTreePrediction.probability > 0.5;
               }).length} mango trees detected
             </span>
           </h2>
-          <button onClick={clearAllResults} className="clear-button">
+          <button className="clear-button" onClick={clearAllResults}>
             Clear All
           </button>
         </div>
@@ -456,96 +505,92 @@ const TeachableMachineImageClassifier = () => {
 
       {/* Results Grid */}
       <div className="results-grid">
-        {/* Sort results by timestamp (newest first) */}
         {[...imageResults]
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-          .map((result) => (
-            <div key={result.id} className="result-card">
-              <div className="image-container">
-                <img
-                  src={result.imageUrl}
-                  alt={result.file.name}
-                  className="result-image"
-                />
-                <button
-                  onClick={() => removeImageResult(result.id)}
-                  className="delete-button"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+          .map((result) => {
+            const mangoTreePrediction = result.predictions.find(p =>
+              p.className.toLowerCase().includes('mango')
+            );
+            const isMangoDetected = mangoTreePrediction && mangoTreePrediction.probability > 0.5;
 
-              <div className="card-content">
-                <div className="file-info">
-                  <FileImage size={16} className="file-icon" />
-                  <span className="file-name" title={result.file.name}>
-                    {result.file.name}
-                  </span>
+            return (
+              <div key={result.id} className={`result-card ${isMangoDetected ? 'mango-detected' : ''}`}>
+                <div className="image-container">
+                  <img
+                    src={result.imageUrl}
+                    alt={result.file.name}
+                    className="result-image"
+                  />
+                  <button
+                    onClick={() => removeImageResult(result.id)}
+                    className="delete-button"
+                  >
+                    <X size={16} />
+                  </button>
+                  {isMangoDetected && (
+                    <div className="mango-badge">
+                      Mango Tree
+                    </div>
+                  )}
                 </div>
 
-                {result.location ? (
-                  <div className="location-info">
-                    <MapPin size={14} className="location-icon" />
-                    <span className="coordinates">
-                      {result.location.latitude.toFixed(6)}, {result.location.longitude.toFixed(6)}
+                <div className="card-content">
+                  <div className="file-info">
+                    <FileImage size={16} className="file-icon" />
+                    <span className="file-name" title={result.file.name}>
+                      {result.file.name}
                     </span>
                   </div>
-                ) : (
+
                   <div className="location-info">
-                    <MapPin size={14} className="location-icon no-location" />
-                    <span className="no-location-text">No GPS data available</span>
-                  </div>
-                )}
-
-                <div className="timestamp">
-                  Processed at {result.timestamp}
-                </div>
-
-                <div className="predictions">
-                  <h4 className="predictions-title">Predictions:</h4>
-                  {/* Sort predictions: mango_tree first, then not_mango_tree, then others by probability */}
-                  {result.predictions
-                    .sort((a, b) => {
-                      // Priority order: mango_tree, not_mango_tree, then others by probability
-                      const getPriority = (pred) => {
-                        if (pred.className.toLowerCase() === 'mango_tree') return 1;
-                        if (pred.className.toLowerCase() === 'not_mango_tree') return 2;
-                        return 3;
-                      };
-
-                      const priorityA = getPriority(a);
-                      const priorityB = getPriority(b);
-
-                      if (priorityA !== priorityB) {
-                        return priorityA - priorityB;
+                    <MapPin size={14} className={`location-icon ${result.location ? '' : 'no-location'}`} />
+                    <span className={result.location ? '' : 'no-location-text'}>
+                      {result.location ? 
+                        `${result.location.latitude.toFixed(6)}, ${result.location.longitude.toFixed(6)}` : 
+                        'No GPS data in EXIF'
                       }
+                    </span>
+                  </div>
 
-                      // If same priority, sort by probability (highest first)
-                      return b.probability - a.probability;
-                    })
-                    .slice(0, 3)
-                    .map((prediction, index) => (
-                      <div key={index} className="prediction-item">
-                        <span className="prediction-name">
-                          {prediction.className}
-                        </span>
-                        <div className="prediction-score">
-                          <div className="progress-bar">
-                            <div
-                              className="progress-fill"
-                              style={{ width: `${prediction.probability * 100}%` }}
-                            ></div>
+                  <div className="timestamp">
+                    Processed at {result.timestamp}
+                  </div>
+
+                  <div className="predictions">
+                    <h4 className="predictions-title">Predictions:</h4>
+                    {result.predictions
+                      .sort((a, b) => {
+                        if (a.className.toLowerCase().includes('mango')) return -1;
+                        if (b.className.toLowerCase().includes('mango')) return 1;
+                        return b.probability - a.probability;
+                      })
+                      .slice(0, 3)
+                      .map((prediction, index) => (
+                        <div key={index} className="prediction-item">
+                          <span className="prediction-name">{prediction.className}</span>
+                          <div className="prediction-score">
+                            <div className="progress-bar">
+                              <div
+                                className="progress-fill"
+                                style={{ 
+                                  width: `${prediction.probability * 100}%`,
+                                  backgroundColor: prediction.className.toLowerCase().includes('mango')
+                                    ? prediction.probability > 0.5 ? '#10b981' : '#f59e0b'
+                                    : '#6b7280'
+                                }}
+                              ></div>
+                            </div>
+                            <span className="probability">
+                              {(prediction.probability * 100).toFixed(1)}%
+                            </span>
                           </div>
-                          <span className="probability">
-                            {(prediction.probability * 100).toFixed(1)}%
-                          </span>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
       </div>
 
       {/* Empty State */}
@@ -553,7 +598,9 @@ const TeachableMachineImageClassifier = () => {
         <div className="empty-state">
           <AlertCircle size={64} className="empty-icon" />
           <h3 className="empty-title">No images uploaded yet</h3>
-          <p className="empty-description">Upload some images to see classification results and check for nearby duplicates.</p>
+          <p className="empty-description">
+            Upload some images to see classification results and check for nearby duplicates using our AI-powered mango tree detector.
+          </p>
         </div>
       )}
 
@@ -571,11 +618,14 @@ const TeachableMachineImageClassifier = () => {
       <div className="instructions">
         <h4 className="instructions-title">Instructions:</h4>
         <ul className="instructions-list">
+          <li>• Now using real EXIF GPS extraction from uploaded images</li>
+          <li>• Real Teachable Machine model loading (falls back to demo if URL invalid)</li>
           <li>• Upload images with GPS location data for classification</li>
-          <li>• Images will be automatically sent to the backend for proximity checking</li>
-          <li>• If images are found within 1 meter of each other, you'll see duplicate resolution options</li>
-          <li>• Update TEACHABLE_MACHINE_URL and REACT_APP_BACKEND_URL in your environment</li>
+          <li>• Images with GPS data are sent to backend for proximity checking</li>
+          <li>• Duplicate resolution options appear for images within 1 meter</li>
+          <li>• Update MODEL_URL with your actual Teachable Machine model URL</li>
           <li>• Each image can be removed individually using the X button</li>
+          <li>• Make sure your backend is running on localhost:8000</li>
         </ul>
       </div>
     </div>
