@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Upload, X, FileImage, AlertCircle, MapPin, Check, Trash2 } from 'lucide-react';
+import { Upload, X, FileImage, AlertCircle, MapPin, Check, Trash2, Cloud, Save, Download } from 'lucide-react';
 import * as tmImage from '@teachablemachine/image';
 import EXIF from 'exif-js';
 import './App.css';
@@ -14,6 +14,14 @@ const TeachableMachineImageClassifier = () => {
   const [isCheckingDuplicates, setIsCheckingDuplicates] = useState(false);
   const [librariesLoaded, setLibrariesLoaded] = useState(false);
   const [error, setError] = useState('');
+  
+  // New state for cloud storage features
+  const [cloudStorageRecords, setCloudStorageRecords] = useState([]);
+  const [isCloudUploading, setIsCloudUploading] = useState(false);
+  const [isBulkSaving, setIsBulkSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({});
+  const [showCloudPanel, setShowCloudPanel] = useState(false);
+  
   const fileInputRef = useRef(null);
 
   // Backend URL
@@ -38,7 +46,22 @@ const TeachableMachineImageClassifier = () => {
     };
 
     checkLibraries();
+    // Load cloud storage records on startup
+    loadCloudStorageRecords();
   }, []);
+
+  // Load cloud storage records from backend
+  const loadCloudStorageRecords = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/cloud-storage`);
+      if (response.ok) {
+        const data = await response.json();
+        setCloudStorageRecords(data.records || []);
+      }
+    } catch (error) {
+      console.log('Could not load cloud storage records:', error);
+    }
+  };
 
   // Convert DMS to decimal degrees
   const convertDMSToDD = (degrees, minutes, seconds, direction) => {
@@ -222,6 +245,134 @@ const TeachableMachineImageClassifier = () => {
     }
   };
 
+  // Upload single image to cloud storage
+  const uploadImageToCloud = async (result) => {
+    if (!result.location) {
+      setError('Image must have GPS data to upload to cloud');
+      return;
+    }
+
+    setUploadProgress(prev => ({ ...prev, [result.id]: 'uploading' }));
+    
+    try {
+      // Convert image to base64
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = result.imageUrl;
+      });
+
+      const base64Image = imageToBase64(img);
+
+      const response = await fetch(`${BACKEND_URL}/upload-image`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageId: String(result.id),
+          imageName: result.file.name,
+          imageData: base64Image,
+          latitude: result.location.latitude,
+          longitude: result.location.longitude,
+          metadata: {
+            predictions: result.predictions,
+            timestamp: result.timestamp,
+            fileSize: result.file.size,
+            fileType: result.file.type
+          }
+        })
+      });
+
+      if (response.ok) {
+        const cloudResponse = await response.json();
+        
+        // Add to cloud storage records
+        const newRecord = {
+          imageId: result.id,
+          imageName: result.file.name,
+          cloudinaryUrl: cloudResponse.cloudinaryUrl,
+          publicId: cloudResponse.publicId,
+          latitude: result.location.latitude,
+          longitude: result.location.longitude,
+          uploadedAt: new Date(),
+          size: result.file.size,
+          format: result.file.type
+        };
+        
+        setCloudStorageRecords(prev => [...prev, newRecord]);
+        setUploadProgress(prev => ({ ...prev, [result.id]: 'success' }));
+        
+        // Clear success status after 3 seconds
+        setTimeout(() => {
+          setUploadProgress(prev => {
+            const updated = { ...prev };
+            delete updated[result.id];
+            return updated;
+          });
+        }, 3000);
+        
+      } else {
+        throw new Error(`Upload failed: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      setUploadProgress(prev => ({ ...prev, [result.id]: 'error' }));
+      setError(`Upload failed: ${error.message}`);
+      
+      // Clear error status after 5 seconds
+      setTimeout(() => {
+        setUploadProgress(prev => {
+          const updated = { ...prev };
+          delete updated[result.id];
+          return updated;
+        });
+      }, 5000);
+    }
+  };
+
+  // Bulk save approved images to cloud
+  const bulkSaveToCloud = async () => {
+    setIsBulkSaving(true);
+    
+    try {
+      const response = await fetch(`${BACKEND_URL}/bulk-save`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Bulk save result:', result);
+        
+        // Refresh cloud storage records
+        await loadCloudStorageRecords();
+        
+        if (result.saved_count > 0) {
+          setError(''); // Clear any previous errors
+          // Show success message
+          const successMsg = `Successfully saved ${result.saved_count} approved images to cloud storage!`;
+          setError(successMsg);
+          setTimeout(() => setError(''), 5000);
+        } else {
+          setError('No approved images found to save. Make decisions on duplicate pairs first.');
+        }
+      } else {
+        throw new Error(`Bulk save failed: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Bulk save error:', error);
+      setError(`Bulk save failed: ${error.message}`);
+    } finally {
+      setIsBulkSaving(false);
+    }
+  };
+
   // Handle model type change
   const handleModelTypeChange = (newModelType) => {
     setModelType(newModelType);
@@ -367,24 +518,72 @@ const TeachableMachineImageClassifier = () => {
     setError('');
   };
 
+  // Get upload button style based on status
+  const getUploadButtonStyle = (resultId) => {
+    const status = uploadProgress[resultId];
+    const baseStyle = {
+      padding: '6px 12px',
+      borderRadius: '4px',
+      border: 'none',
+      cursor: 'pointer',
+      fontSize: '12px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '4px',
+      transition: 'all 0.2s'
+    };
+
+    switch (status) {
+      case 'uploading':
+        return { ...baseStyle, backgroundColor: '#f59e0b', color: 'white' };
+      case 'success':
+        return { ...baseStyle, backgroundColor: '#10b981', color: 'white' };
+      case 'error':
+        return { ...baseStyle, backgroundColor: '#ef4444', color: 'white' };
+      default:
+        return { ...baseStyle, backgroundColor: '#3b82f6', color: 'white' };
+    }
+  };
+
+  // Get upload button text and icon
+  const getUploadButtonContent = (resultId) => {
+    const status = uploadProgress[resultId];
+    const isAlreadyUploaded = cloudStorageRecords.some(record => String(record.imageId) === String(resultId));
+    
+    if (isAlreadyUploaded) {
+      return { icon: <Check size={12} />, text: 'Uploaded' };
+    }
+    
+    switch (status) {
+      case 'uploading':
+        return { icon: <Cloud size={12} />, text: 'Uploading...' };
+      case 'success':
+        return { icon: <Check size={12} />, text: 'Uploaded!' };
+      case 'error':
+        return { icon: <X size={12} />, text: 'Failed' };
+      default:
+        return { icon: <Cloud size={12} />, text: 'Upload' };
+    }
+  };
+
   return (
     <div className="app-container">
       {/* Header */}
       <div className="header">
         <h1 className="app-title">
-          Mango Tree Classifier with Model Selection
+          Mango Tree Classifier with Cloud Storage
         </h1>
         <p className="app-description">
-          Upload images to classify mango trees using either Teachable Machine or fine-tuned MobileNetV2 models, and detect nearby duplicates using GPS location data.
+          Upload images to classify mango trees, detect nearby duplicates, and save approved images to cloud storage (Cloudinary).
         </p>
       </div>
 
       {/* Error Display */}
       {error && (
         <div style={{ 
-          backgroundColor: '#fee2e2', 
-          border: '1px solid #fca5a5', 
-          color: '#dc2626', 
+          backgroundColor: error.includes('Successfully') ? '#d1fae5' : '#fee2e2', 
+          border: `1px solid ${error.includes('Successfully') ? '#10b981' : '#fca5a5'}`, 
+          color: error.includes('Successfully') ? '#065f46' : '#dc2626', 
           padding: '12px 16px', 
           borderRadius: '8px', 
           marginBottom: '24px',
@@ -395,6 +594,114 @@ const TeachableMachineImageClassifier = () => {
           <span>{error}</span>
         </div>
       )}
+
+      {/* Cloud Storage Panel */}
+      <div style={{ 
+        marginBottom: '24px', 
+        padding: '16px', 
+        backgroundColor: 'white', 
+        borderRadius: '8px', 
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)' 
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <h3 style={{ margin: '0', fontSize: '16px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Cloud size={20} />
+            Cloud Storage ({cloudStorageRecords.length} uploaded)
+          </h3>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => setShowCloudPanel(!showCloudPanel)}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '4px',
+                border: '1px solid #d1d5db',
+                backgroundColor: 'white',
+                cursor: 'pointer',
+                fontSize: '12px'
+              }}
+            >
+              {showCloudPanel ? 'Hide' : 'Show'} Records
+            </button>
+            <button
+              onClick={bulkSaveToCloud}
+              disabled={isBulkSaving || duplicatePairs.length > 0}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '4px',
+                border: 'none',
+                backgroundColor: duplicatePairs.length > 0 ? '#9ca3af' : '#10b981',
+                color: 'white',
+                cursor: duplicatePairs.length > 0 ? 'not-allowed' : 'pointer',
+                fontSize: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              <Save size={12} />
+              {isBulkSaving ? 'Saving...' : 'Bulk Save Approved'}
+            </button>
+          </div>
+        </div>
+        
+        <div style={{ fontSize: '12px', color: '#6b7280' }}>
+          {duplicatePairs.length > 0 ? 
+            '⚠️ Resolve duplicate pairs before bulk saving' : 
+            '✅ Ready for bulk save operations'
+          }
+        </div>
+
+        {showCloudPanel && (
+          <div style={{ 
+            marginTop: '12px', 
+            maxHeight: '200px', 
+            overflowY: 'auto', 
+            border: '1px solid #e5e7eb', 
+            borderRadius: '4px' 
+          }}>
+            {cloudStorageRecords.length > 0 ? (
+              <div style={{ padding: '8px' }}>
+                {cloudStorageRecords.map((record, index) => (
+                  <div key={index} style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    padding: '4px 0',
+                    borderBottom: index < cloudStorageRecords.length - 1 ? '1px solid #f3f4f6' : 'none'
+                  }}>
+                    <div style={{ fontSize: '12px' }}>
+                      <div style={{ fontWeight: '500' }}>{record.imageName}</div>
+                      <div style={{ color: '#6b7280' }}>
+                        {record.latitude?.toFixed(6)}, {record.longitude?.toFixed(6)}
+                      </div>
+                    </div>
+                    <a 
+                      href={record.cloudinaryUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      style={{ 
+                        fontSize: '12px', 
+                        color: '#3b82f6', 
+                        textDecoration: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <Download size={12} />
+                      View
+                    </a>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: '#6b7280' }}>
+                No images uploaded to cloud yet
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Library Status */}
       <div style={{ 
@@ -602,6 +909,8 @@ const TeachableMachineImageClassifier = () => {
               p.className.toLowerCase().includes('mango')
             );
             const isMangoDetected = mangoTreePrediction && mangoTreePrediction.probability > 0.5;
+            const uploadButtonContent = getUploadButtonContent(result.id);
+            const isAlreadyUploaded = cloudStorageRecords.some(record => String(record.imageId) === String(result.id));
 
             return (
               <div key={result.id} className={`result-card ${isMangoDetected ? 'mango-detected' : ''}`}>
@@ -621,6 +930,24 @@ const TeachableMachineImageClassifier = () => {
                     <div className="mango-badge">
                       Mango Tree
                     </div>
+                  )}
+                  {/* Cloud Upload Button */}
+                  {result.location && (
+                    <button
+                      onClick={() => uploadImageToCloud(result)}
+                      disabled={uploadProgress[result.id] === 'uploading' || isAlreadyUploaded}
+                      style={{
+                        ...getUploadButtonStyle(result.id),
+                        position: 'absolute',
+                        bottom: '8px',
+                        right: '8px',
+                        opacity: isAlreadyUploaded ? 0.7 : 1,
+                        cursor: isAlreadyUploaded ? 'default' : 'pointer'
+                      }}
+                    >
+                      {uploadButtonContent.icon}
+                      {uploadButtonContent.text}
+                    </button>
                   )}
                 </div>
 
@@ -645,6 +972,21 @@ const TeachableMachineImageClassifier = () => {
                   <div className="timestamp">
                     Processed at {result.timestamp}
                   </div>
+
+                  {/* Cloud Status Indicator */}
+                  {result.location && (
+                    <div style={{ 
+                      fontSize: '12px', 
+                      color: isAlreadyUploaded ? '#10b981' : '#6b7280',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      marginTop: '4px'
+                    }}>
+                      <Cloud size={12} />
+                      {isAlreadyUploaded ? 'Uploaded to cloud' : 'Ready for upload'}
+                    </div>
+                  )}
 
                   <div className="predictions">
                     <h4 className="predictions-title">Predictions:</h4>
@@ -689,17 +1031,20 @@ const TeachableMachineImageClassifier = () => {
           <AlertCircle size={64} className="empty-icon" />
           <h3 className="empty-title">No images uploaded yet</h3>
           <p className="empty-description">
-            Upload some images to see classification results and check for nearby duplicates using our AI-powered mango tree detector.
+            Upload some images to see classification results, check for nearby duplicates, and save to cloud storage.
           </p>
         </div>
       )}
 
       {/* Loading State */}
-      {(isProcessing || isCheckingDuplicates) && (
+      {(isProcessing || isCheckingDuplicates || isCloudUploading || isBulkSaving) && (
         <div className="loading-state">
           <div className="spinner"></div>
           <p className="loading-text">
-            {isProcessing ? 'Processing images...' : 'Checking for nearby duplicates...'}
+            {isProcessing ? 'Processing images...' : 
+             isCheckingDuplicates ? 'Checking for nearby duplicates...' :
+             isCloudUploading ? 'Uploading to cloud...' :
+             isBulkSaving ? 'Bulk saving to cloud...' : 'Loading...'}
           </p>
         </div>
       )}
@@ -711,13 +1056,35 @@ const TeachableMachineImageClassifier = () => {
           <li>• Choose between Teachable Machine (with fallback) or MobileNetV2 models</li>
           <li>• Teachable Machine runs locally with fallback to mock model if URL invalid</li>
           <li>• MobileNetV2 uses backend API for classification</li>
-          <li>• Upload images with GPS location data for classification</li>
+          <li>• Upload images with GPS location data for classification and cloud storage</li>
           <li>• Images with GPS data are sent to backend for proximity checking</li>
           <li>• Duplicate resolution options appear for images within 1 meter</li>
+          <li>• <strong>NEW:</strong> Individual cloud upload buttons on each image with GPS data</li>
+          <li>• <strong>NEW:</strong> Bulk save approved images to Cloudinary after resolving duplicates</li>
+          <li>• <strong>NEW:</strong> View cloud storage records and access uploaded images</li>
           <li>• Update MODEL_URL with your actual Teachable Machine model URL</li>
           <li>• Each image can be removed individually using the X button</li>
-          <li>• Make sure your backend is running on localhost:8000</li>
+          <li>• Make sure your backend is running on localhost:8000 with Cloudinary configured</li>
         </ul>
+      </div>
+
+      {/* Cloud Storage Setup Info */}
+      <div style={{ 
+        marginTop: '24px', 
+        padding: '16px', 
+        backgroundColor: '#f8fafc', 
+        borderRadius: '8px', 
+        border: '1px solid #e2e8f0' 
+      }}>
+        <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: '#374151' }}>
+          🔧 Cloud Storage Setup (Backend):
+        </h4>
+        <div style={{ fontSize: '12px', color: '#6b7280', lineHeight: '1.4' }}>
+          <div>1. Sign up for free Cloudinary account at https://cloudinary.com</div>
+          <div>2. Set environment variables: CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET</div>
+          <div>3. Install dependencies: pip install cloudinary pillow</div>
+          <div>4. Images uploaded get GPS metadata and are accessible via generated URLs</div>
+        </div>
       </div>
     </div>
   );
